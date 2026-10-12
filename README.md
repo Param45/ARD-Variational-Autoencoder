@@ -4,9 +4,12 @@
   <img src="https://img.shields.io/badge/WACV%202025-Oral%20Presentation-4B0082?style=for-the-badge" alt="Selected for an oral presentation at WACV 2025">
 </p>
 
-Official implementation of **"ARD-VAE: A Statistical Formulation to Find the Relevant Latent
+A **reproduction** of **"ARD-VAE: A Statistical Formulation to Find the Relevant Latent
 Dimensions of Variational Autoencoders"** by **Surojit Saha, Sarang Joshi, and Ross Whitaker**
-(University of Utah), **WACV 2025**.
+(University of Utah), **WACV 2025**. The method and the model code are theirs; this fork ports the
+reference implementation to the current TensorFlow/Keras ecosystem, adds the missing evaluation
+pieces (k-NN precision/recall, active-dimension discovery), and reproduces the paper's **Table 2**
+end to end in a single Kaggle session — see [Our reproduction](#our-reproduction).
 
 The **Automatic Relevancy Detection VAE (ARD-VAE)** discovers *how many* latent dimensions a
 dataset actually needs — instead of treating the bottleneck size as a hyperparameter tuned by
@@ -16,7 +19,7 @@ data*. Irrelevant axes are driven to near-zero variance, so the relevant dimensi
 off after training. Crucially, this **does not modify the ELBO** (only the prior) and adds
 **no extra regularizer or hyperparameter** beyond the single reconstruction/KL trade-off weight.
 
-Code: https://github.com/Surojit-Utah/ARD-VAE
+Original code: https://github.com/Surojit-Utah/ARD-VAE
 
 Paper (arXiv): https://arxiv.org/abs/2501.10901
 
@@ -45,6 +48,7 @@ output essentially unchanged — exactly the behavior ARD-VAE uses to identify t
 - [Usage](#usage)
 - [Extending ARD-VAE to a new dataset](#extending-ard-vae-to-a-new-dataset)
 - [Results](#results)
+- [Our reproduction](#our-reproduction)
 - [Key Findings](#key-findings)
 - [Citation](#citation)
 
@@ -181,7 +185,8 @@ and CIFAR10 — relevant axes carry high variance; the rest collapse toward zero
 ```
 ARD-VAE/
 ├── Main.py                    # Entry point: --run_id, --config_id
-├── config/local_config.py     # Per-dataset configurations (0=CIFAR10, 1=CelebA, 2=MNIST)
+├── ARD_VAE_Kaggle_Table2_Replication.ipynb   # End-to-end Table 2 run on 2x T4 (training + eval)
+├── config/local_config.py     # Per-dataset configs (0-2 start-high, 3-4 = Table 2 presets)
 ├── data/                      # Dataloaders: MNIST, CIFAR10, CelebA (+ datagenerator)
 ├── models/                    # Encoder/Decoder + Sampling per dataset (ae_model_*)
 ├── loss/vae_loss.py           # ARD KL (Gamma target var b/a) + reconstruction (MSE / BCE)
@@ -246,11 +251,16 @@ Pixels are scaled to $`[0,1]`$ for MNIST/CIFAR10; CelebA is mapped to $`[-1,1]`$
 > (`64×64×3`, uint8/float) beforehand and run `Main.py` from the directory that contains it, or
 > edit `self.data_dir`.
 
-> **Note — shipped config vs. paper.** `config/local_config.py` ships **start-high** initial
-> sizes: CIFAR10 `latent_dim=256`, CelebA `latent_dim=64`, MNIST `latent_dim=128` (with
-> `kld_scalar` 0.05 / 3.0 / 0.5). The paper's main FID/precision-recall table uses **MNIST L=16**
-> and **CIFAR10 L=128**. Set `latent_dim` accordingly to reproduce a specific table; the whole
-> point of ARD-VAE is that the discovered active count is stable across the initial $`L`$.
+> **Note — which config to use.** `config/local_config.py` ships two families. Configs **0–2** are
+> the **start-high** demonstrations (CIFAR10 `latent_dim=256`, CelebA `64`, MNIST `128`, with
+> `kld_scalar` 0.05 / 3.0 / 0.5). Configs **3–4** are the **Table 2 presets** added here —
+> MNIST `latent_dim=16` (50 epochs) and CIFAR10 `latent_dim=128` (30 epochs) — and are what the
+> replication notebook runs. The whole point of ARD-VAE is that the discovered active count is
+> stable across the initial $`L`$, so either family converges to a similar count.
+
+> **Note — mixed precision.** Configs 3–4 carry a `mixed_precision` flag. FP16 trains ~2.5x faster
+> on a T4, but every CIFAR10 seed diverged to NaN within a few epochs, so it ships **off** and all
+> reported runs are full float32.
 
 ---
 
@@ -265,14 +275,34 @@ Pixels are scaled to $`[0,1]`$ for MNIST/CIFAR10; CelebA is mapped to $`[-1,1]`$
 python Main.py --run_id 1 --config_id 0
 ```
 
-`--config_id` selects a dataset config: `0 = CIFAR10`, `1 = CelebA`, `2 = MNIST`. Each
+`--config_id` selects a dataset config: `0 = CIFAR10`, `1 = CelebA`, `2 = MNIST`,
+`3 = MNIST (L=16, Table 2)`, `4 = CIFAR10 (L=128, Table 2)`. Each
 `--run_id` is a different seed (the paper trains **5 runs** per dataset). Outputs are written to
 `logs/{dataset}/Dim_{L}/Run_{run_id}/` (checkpoints, reconstructions, generations, latent
 projections, TensorBoard logs).
 
 **3) Evaluate** (FID + precision/recall + active dimensions) via the scripts in
-[`eval/study_fid/`](eval/study_fid/) — generate samples from a checkpoint and score them against
-the pre-computed Inception statistics (`fid_stats_*.npz`).
+[`eval/study_fid/`](eval/study_fid/) — build the reference statistics once, then generate samples
+from each checkpoint and score them:
+
+```bash
+# once: Inception mu/sigma + raw features (the features are what precision/recall needs)
+cd eval/study_fid/compute_fid
+python prepare_fid_stats.py --dataset ALL --out_dir fid_stats --samples 10000
+
+# per dataset: sample from the checkpoints and discover the active dimensions
+cd ../generate_samples
+python generate_samples.py --config_id 3 --latent_dim 16 --gen_type generation --eval_ids 1 2 3 4 5
+
+# per dataset: FID + k-NN precision/recall over those samples
+cd ../compute_fid
+python compute_n_plot_fid.py --config_id 3 --latent_dim 16 --gen_type generation --eval_ids 1 2 3 4 5
+```
+
+**Or run the whole thing**: [`ARD_VAE_Kaggle_Table2_Replication.ipynb`](ARD_VAE_Kaggle_Table2_Replication.ipynb)
+does all of the above — reference stats, 10 training runs, sampling, scoring and the final table —
+in one Kaggle session on 2x T4. All 10 runs go through a **single job queue over both GPUs**, so a
+GPU never idles; finished seeds are skipped on re-run, which makes the notebook restart-safe.
 
 ---
 
@@ -358,6 +388,46 @@ count or FID:
 
 ---
 
+## Our reproduction
+
+Setup: **Kaggle, 2x NVIDIA T4**, full float32, 5 seeds per dataset, 10,000 generated samples per
+seed scored against 10,000 real images. MNIST `L=16` for 50 epochs (config 3); CIFAR-10 `L=128`
+for **30 epochs** (config 4) instead of the paper's 100, so the whole pipeline fits in one ~4 h
+session. Everything below comes from
+[`ARD_VAE_Kaggle_Table2_Replication.ipynb`](ARD_VAE_Kaggle_Table2_Replication.ipynb).
+
+| | MNIST Active | MNIST FID | MNIST Prec | MNIST Rec | CIFAR10 Active | CIFAR10 FID | CIFAR10 Prec | CIFAR10 Rec |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **Paper** | 12.80 ± 0.40 | 22.24 ± 0.57 | 0.91 | 0.98 | 105.80 ± 1.33 | 87.56 ± 1.21 | 0.82 | 0.51 |
+| **Ours** | 13.00 ± 0.00 | 34.73 ± 0.57 | 0.06 | 0.26 | 103.60 ± 1.02 | 94.94 ± 1.95 | 0.44 ± 0.02 | 0.04 ± 0.01 |
+
+**What reproduced.** The central claim holds: starting from an over-specified $`L`$, the model
+prunes itself to **13.0 active axes on MNIST** (paper: 12.8) and **103.6 on CIFAR-10**
+(paper: 105.8), and the MNIST count was identical across all 5 seeds. FID is in the right range —
+ours on CIFAR-10 (94.94) still beats every baseline in the paper's table except RAE, at 30% of the
+training budget.
+
+**What did not.** FID is worse than the paper (34.73 vs. 22.24 on MNIST; 94.94 vs. 87.56 on
+CIFAR-10), which the reduced epoch count explains for CIFAR-10 but not fully for MNIST. The
+**k-NN precision/recall numbers are far below the paper's** and should not be read as a result
+about the model — our `precision_recall.py` is a from-scratch addition (the reference release has
+no precision/recall code) and its k-NN manifold estimation is the most likely culprit. Treat that
+column as unvalidated.
+
+### Changes made to the reference code
+
+- **Keras 3 compatibility** — fixed decoder training and several evaluation-time crashes in the
+  original release.
+- **Added `eval/study_fid/compute_fid/precision_recall.py`** — k-NN precision/recall, which the
+  reference release does not ship. `prepare_fid_stats.py` now also saves the raw Inception
+  features it needs (~20x faster via BLAS pairwise distances).
+- **Forward-mode Jacobian** for the decoder-sensitivity weight, which dominates active-dimension
+  discovery at `L=128`.
+- **Table 2 configs (3, 4)** and a multi-GPU job queue so 10 runs fit one Kaggle session.
+- **Mixed precision left off** — FP16 diverged to NaN on CIFAR-10 (the flag is kept for reference).
+
+---
+
 ## Key Findings
 
 - **Discovers the right count.** On synthetic data with 6 known factors, ARD-VAE recovers ≈6
@@ -369,12 +439,15 @@ count or FID:
   only the standard `kld_scalar`.
 - **No ELBO surgery.** The only change from a vanilla VAE is the hierarchical (relevance-aware)
   prior — so ARD-VAE drops into virtually any VAE architecture.
+- **It reproduces.** The active-dimension result — the paper's actual contribution — came out
+  within 0.2 (MNIST) and 2.2 (CIFAR-10) axes of the published numbers on a 4-hour commodity-GPU
+  budget, with zero seed variance on MNIST.
 
 ---
 
 ## Citation
 
-If you use this code or method, please cite:
+The method and the original implementation are by the authors below — please cite their paper:
 
 ```bibtex
 @inproceedings{saha2025ardvae,
@@ -387,5 +460,8 @@ If you use this code or method, please cite:
 }
 ```
 
-**Authors:** Surojit Saha, Sarang Joshi, Ross Whitaker — University of Utah
+**Paper authors:** Surojit Saha, Sarang Joshi, Ross Whitaker — University of Utah
 (`surojit.saha@utah.edu`, `sarang.joshi@utah.edu`, `whitaker@cs.utah.edu`).
+
+**This reproduction:** Ankesh Mishra, Devansh Adhini, Param Sonawane, Vedaang Narkhede —
+IIIT Vadodara (CS433, Group 2).
