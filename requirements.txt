@@ -1,0 +1,9 @@
+# ARD-VAE (TensorFlow / Keras)
+tensorflow
+tensorboard  # used by train/trainer.py (tf.summary); no longer bundled with TF >= 2.20
+numpy
+scipy
+matplotlib
+imageio
+tqdm
+nvidia-ml-py3

@@ -1,0 +1,34 @@
+# Added by SS
+# ignore all .txt files
+*.txt
+# but keep requirements.txt
+!requirements.txt
+
+# ignore all .pdf files
+*.pdf
+
+# ignore all .png files
+*.png
+# but keep README figures
+!images/*.png
+
+# only ignore the log files in the current directory
+Output/
+logs/
+
+# Paper sources and local working notes (not tracked)
+Paper/
+TODO.md
+
+# ignores all .md files
+.md
+
+# does not ignore the README.md file
+!README.md
+
+__pycache__/
+
+# Presentation sources and the run notebook (local only)
+dl-p3.ipynb
+old_ppt.tex
+ppt.tex
